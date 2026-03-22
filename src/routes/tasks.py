@@ -20,12 +20,14 @@ async def list_tasks(
     page: int = Query(1, ge=1, description="Page number"),
     per_page: int = Query(20, ge=1, le=100, description="Items per page"),
     status: str | None = Query(None, description="Filter by status"),
-    filter: str | None = Query(None, description="Apply a named filter"),
+    filter_name: str | None = Query(
+        None, alias="filter", description="Apply a named filter"
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> TaskListResponse:
     """List tasks with optional filtering and pagination."""
     # Intentional bug path for demo: triggers NoneType error
-    if filter == "broken":
+    if filter_name == "broken":
         logger.warning("Broken filter triggered — this is the demo bug path")
         result = None
         # This will raise AttributeError: 'NoneType' object has no attribute 'items'
