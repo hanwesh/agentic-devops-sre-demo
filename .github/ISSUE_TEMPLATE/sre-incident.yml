@@ -1,0 +1,83 @@
+name: SRE Incident Report
+description: Auto-generated incident report from Azure SRE Agent
+title: "[SRE] "
+labels: ["sre-incident", "bug", "production"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 🚨 SRE Incident Report
+        This issue was automatically created by the Azure SRE Agent.
+
+  - type: input
+    id: severity
+    attributes:
+      label: Severity
+      description: Incident severity level
+      placeholder: "critical / high / medium / low"
+    validations:
+      required: true
+
+  - type: textarea
+    id: error-summary
+    attributes:
+      label: Error Summary
+      description: Human-readable summary of the error
+      placeholder: "Describe the error..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: stack-trace
+    attributes:
+      label: Stack Trace
+      description: Full stack trace from Application Insights
+      render: python
+      placeholder: |
+        Traceback (most recent call last):
+          File "..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: metrics
+    attributes:
+      label: Performance Metrics
+      description: Relevant performance metrics at time of incident
+      render: json
+      placeholder: |
+        {
+          "error_rate": "15%",
+          "p95_response_time": "4.2s",
+          "affected_endpoint": "/api/tasks"
+        }
+
+  - type: textarea
+    id: root-cause
+    attributes:
+      label: Root Cause Analysis
+      description: AI-generated root cause analysis
+      placeholder: "The error appears to be caused by..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggested-fix
+    attributes:
+      label: Suggested Fix
+      description: AI-suggested code changes to resolve the issue
+      render: python
+      placeholder: "In file src/routes/tasks.py, line XX..."
+
+  - type: textarea
+    id: deployment-info
+    attributes:
+      label: Recent Deployment Info
+      description: Information about the most recent deployment
+      render: json
+      placeholder: |
+        {
+          "commit_sha": "abc1234",
+          "deployed_at": "2024-01-01T00:00:00Z",
+          "deployed_by": "github-actions"
+        }
