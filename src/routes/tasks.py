@@ -29,7 +29,7 @@ async def list_tasks(
         logger.warning("Broken filter triggered — this is the demo bug path")
         result = None
         # This will raise AttributeError: 'NoneType' object has no attribute 'items'
-        return result.items  # type: ignore[union-attr]
+        return result.items  # type: ignore[union-attr,no-any-return,attr-defined]
 
     query = select(Task)
     count_query = select(func.count(Task.id))
