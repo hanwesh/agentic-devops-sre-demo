@@ -1,0 +1,81 @@
+name: SRE Issue Triage
+
+on:
+  issues:
+    types: [opened, labeled]
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  triage:
+    name: Triage SRE Incident
+    if: contains(github.event.issue.labels.*.name, 'sre-incident')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Parse issue severity
+        id: severity
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.issue.body || '';
+            const title = context.payload.issue.title || '';
+            const combined = (title + ' ' + body).toLowerCase();
+
+            let priority = 'medium';
+            if (combined.includes('critical') || combined.includes('outage') || combined.includes('p0')) {
+              priority = 'critical';
+            } else if (combined.includes('high') || combined.includes('p1') || combined.includes('error rate')) {
+              priority = 'high';
+            } else if (combined.includes('low') || combined.includes('p3') || combined.includes('minor')) {
+              priority = 'low';
+            }
+
+            core.setOutput('priority', priority);
+            return priority;
+
+      - name: Add priority label
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const priority = '${{ steps.severity.outputs.priority }}';
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: [`priority:${priority}`, 'copilot-assigned']
+            });
+
+      - name: Post triage comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const priority = '${{ steps.severity.outputs.priority }}';
+            const emoji = {
+              critical: '🔴',
+              high: '🟠',
+              medium: '🟡',
+              low: '🟢'
+            };
+
+            const body = `## ${emoji[priority] || '🟡'} SRE Issue Triaged
+
+            **Priority:** \`${priority}\`
+            **Auto-assigned to:** Copilot Coding Agent (via \`copilot-assigned\` label)
+
+            ### Next Steps
+            1. Copilot Coding Agent will analyze the stack trace and error details
+            2. A fix PR will be created automatically
+            3. A human reviewer will approve and merge the fix
+            4. CI/CD will deploy the fix to production
+
+            ---
+            _Triaged automatically by the SRE Issue Triage workflow_`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });

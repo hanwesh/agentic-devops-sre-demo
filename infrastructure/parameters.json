@@ -1,0 +1,29 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "baseName": {
+      "value": "agentic-devops-demo"
+    },
+    "postgresAdminLogin": {
+      "value": "pgadmin"
+    },
+    "postgresAdminPassword": {
+      "reference": {
+        "keyVault": {
+          "id": "/subscriptions/<SUBSCRIPTION_ID>/resourceGroups/<RG>/providers/Microsoft.KeyVault/vaults/<VAULT_NAME>"
+        },
+        "secretName": "postgres-admin-password"
+      }
+    },
+    "appServicePlanSku": {
+      "value": "S1"
+    },
+    "postgresSku": {
+      "value": "Standard_D2s_v3"
+    },
+    "postgresStorageGB": {
+      "value": 32
+    }
+  }
+}
