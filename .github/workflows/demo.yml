@@ -1,0 +1,264 @@
+name: Approved isolated demo
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Reviewed disposable branch: demo/<run-id>"
+        type: string
+        required: true
+      run_id:
+        description: "The same unique run ID used for the branch and incident"
+        type: string
+        required: true
+      scenario_state:
+        description: "Regression explicitly sends bounded faults; healthy verifies recovery"
+        type: choice
+        options: [healthy, regression]
+        default: healthy
+        required: true
+      issue_number:
+        description: "Original incident issue number, or 0 before an incident exists"
+        type: string
+        default: "0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: azure-release-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  DEMO_BRANCH: ${{ inputs.branch }}
+  DEMO_RUN_ID: ${{ inputs.run_id }}
+  SCENARIO_STATE: ${{ inputs.scenario_state }}
+  ISSUE_NUMBER: ${{ inputs.issue_number }}
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      target_sha: ${{ steps.prepare.outputs.target_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt -c requirements.lock
+      - id: prepare
+        name: Require trusted workflow, matching branch and protected demo environment
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AZURE_RUNNER_LABELS: ${{ vars.AZURE_RUNNER_LABELS }}
+          EPHEMERAL_RUNNER_CONFIRMED: ${{ vars.EPHEMERAL_RUNNER_CONFIRMED }}
+          ADMIN_BYPASS_DISABLED_CONFIRMED: ${{ vars.ADMIN_BYPASS_DISABLED_CONFIRMED }}
+        run: |
+          python -m scripts.demo_release prepare \
+            --branch "$DEMO_BRANCH" --run-id "$DEMO_RUN_ID" \
+            --state "$SCENARIO_STATE" --issue "$ISSUE_NUMBER"
+
+  gates:
+    name: Validate the exact isolated candidate, including expected regression
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TARGET_SHA: ${{ needs.preflight.outputs.target_sha }}
+      TRUSTED_SHA: ${{ github.sha }}
+      TEST_POSTGRES_URL: postgresql+asyncpg://postgres:ephemeral-ci-only@localhost:5432/postgres
+      ALLOW_EPHEMERAL_POSTGRES: "true"
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ephemeral-ci-only
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.target_sha }}
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt -c requirements.lock
+      - name: Keep baseline code, configuration and positive tests protected
+        run: |
+          python -m scripts.demo_release verify-diff --candidate candidate \
+            --trusted-sha "$TRUSTED_SHA" --target-sha "$TARGET_SHA"
+      - name: Required lint, type, audit and all non-regression tests
+        working-directory: candidate
+        run: |
+          ruff check .
+          ruff format --check .
+          mypy src/ scripts/ --ignore-missing-imports
+          pip-audit --disable-pip --no-deps -r requirements.lock --progress-spinner off
+          pytest -m "not demo_regression" -v
+      - name: Prove only the two expected positive tests fail, or both pass on recovery
+        run: |
+          set +e
+          (cd candidate && pytest -m demo_regression --junitxml=demo-regression.xml -v)
+          result=$?
+          set -e
+          if [ "$SCENARIO_STATE" = regression ]; then
+            test "$result" -eq 1
+          else
+            test "$result" -eq 0
+          fi
+          python -m scripts.demo_release verify-tests \
+            --junit candidate/demo-regression.xml --state "$SCENARIO_STATE"
+      - name: Package the gated candidate using trusted tooling
+        run: |
+          python -m scripts.package build --root candidate --sha "$TARGET_SHA"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: demo-release-${{ needs.preflight.outputs.target_sha }}
+          path: dist/app.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  deploy:
+    name: Human-approved demo slot only; never swap
+    needs: [preflight, gates]
+    runs-on: ${{ fromJSON(vars.AZURE_RUNNER_LABELS) }}
+    timeout-minutes: 25
+    environment:
+      name: demo
+      url: https://${{ vars.AZURE_WEBAPP_NAME }}-demo.azurewebsites.net
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+      id-token: write
+    env:
+      TARGET_SHA: ${{ needs.preflight.outputs.target_sha }}
+      AZURE_WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
+      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      DATABASE_NAME: ${{ vars.DATABASE_NAME }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt -c requirements.lock
+      - uses: actions/download-artifact@v4
+        with:
+          name: demo-release-${{ needs.preflight.outputs.target_sha }}
+          path: dist
+      - run: python -m scripts.package verify --sha "$TARGET_SHA"
+      - name: Record the approved deployment attempt before any Azure writes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -m scripts.demo_release evidence --kind deployment --status pending \
+            --sha "$TARGET_SHA" --run-id "$DEMO_RUN_ID" \
+            --output artifacts/deployment-pending.json
+          if [ "$ISSUE_NUMBER" != 0 ]; then
+            python -m scripts.evidence record artifacts/deployment-pending.json \
+              --repo "$GITHUB_REPOSITORY" --issue "$ISSUE_NUMBER"
+          fi
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Migrate only the demo database
+        env:
+          MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
+          MIGRATOR_USER: ${{ vars.MIGRATOR_USER }}
+          RUNTIME_USER: ${{ vars.RUNTIME_USER }}
+          DATABASE_SSL_REQUIRED: "true"
+        run: |
+          python -m scripts.migrate --database "$DATABASE_NAME" \
+            --user "$MIGRATOR_USER" --runtime-user "$RUNTIME_USER"
+      - uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ vars.AZURE_WEBAPP_NAME }}
+          slot-name: demo
+          package: dist/app.zip
+      - name: Bind the approved scenario run to demo-only sticky settings
+        run: |
+          az webapp config appsettings set \
+            --name "$AZURE_WEBAPP_NAME" --resource-group "$AZURE_RESOURCE_GROUP" \
+            --slot demo --slot-settings DEMO_SCENARIO_ENABLED=true "DEMO_RUN_ID=$DEMO_RUN_ID" \
+            --only-show-errors --output none
+      - name: Verify normal CRUD against the actual demo database
+        run: |
+          python -m scripts.smoke \
+            --url "https://$AZURE_WEBAPP_NAME-demo.azurewebsites.net" \
+            --environment demo --sha "$TARGET_SHA" --demo-run-id "$DEMO_RUN_ID" \
+            --database "$DATABASE_NAME" --crud --output artifacts/demo-smoke.json
+      - name: Explicitly approved bounded fault verification
+        if: inputs.scenario_state == 'regression'
+        run: |
+          python -m demo.traffic \
+            --base-url "https://$AZURE_WEBAPP_NAME-demo.azurewebsites.net" \
+            --run-id "$DEMO_RUN_ID" --expected-commit "$TARGET_SHA" \
+            --mode fault --allow-faults --requests 21 --max-duration 120 \
+            --evidence artifacts/fault-traffic.json
+      - name: Verify recovery of the original endpoint with the scenario still enabled
+        if: inputs.scenario_state == 'healthy'
+        run: |
+          python -m scripts.smoke \
+            --url "https://$AZURE_WEBAPP_NAME-demo.azurewebsites.net" \
+            --environment demo --sha "$TARGET_SHA" --demo-run-id "$DEMO_RUN_ID" \
+            --database "$DATABASE_NAME" --endpoint '/api/tasks?filter=broken' \
+            --output artifacts/recovery-smoke.json
+          python -m scripts.demo_release evidence --kind recovery --status succeeded \
+            --sha "$TARGET_SHA" --run-id "$DEMO_RUN_ID" \
+            --check-file artifacts/recovery-smoke.json --output artifacts/recovery-event.json
+      - name: Record the verified deployment artifact
+        run: |
+          python -m scripts.demo_release evidence --kind deployment --status succeeded \
+            --sha "$TARGET_SHA" --run-id "$DEMO_RUN_ID" \
+            --output artifacts/deployment-event.json
+      - name: Append evidence to the matching original issue, not a new incident
+        if: inputs.issue_number != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -m scripts.evidence record artifacts/deployment-event.json \
+            --repo "$GITHUB_REPOSITORY" --issue "$ISSUE_NUMBER"
+          if [ "$SCENARIO_STATE" = healthy ]; then
+            python -m scripts.evidence record artifacts/recovery-event.json \
+              --repo "$GITHUB_REPOSITORY" --issue "$ISSUE_NUMBER"
+          fi
+      - name: Record a failed attempt without claiming recovery
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -m scripts.demo_release evidence --kind deployment --status failed \
+            --sha "$TARGET_SHA" --run-id "$DEMO_RUN_ID" \
+            --output artifacts/deployment-failed.json
+          if [ "$ISSUE_NUMBER" != 0 ]; then
+            python -m scripts.evidence record artifacts/deployment-failed.json \
+              --repo "$GITHUB_REPOSITORY" --issue "$ISSUE_NUMBER"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: demo-evidence-${{ needs.preflight.outputs.target_sha }}-${{ github.run_attempt }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 90

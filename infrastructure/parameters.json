@@ -2,28 +2,34 @@
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
   "contentVersion": "1.0.0.0",
   "parameters": {
-    "baseName": {
-      "value": "agentic-devops-demo"
-    },
-    "postgresAdminLogin": {
-      "value": "pgadmin"
-    },
+    "baseName": {"value": "<UNIQUE_APP_PREFIX>"},
+    "postgresAdminLogin": {"value": "bootstrapadmin"},
+    "productionDatabaseName": {"value": "taskdb_production"},
+    "stagingDatabaseName": {"value": "taskdb_staging"},
+    "demoDatabaseName": {"value": "taskdb_demo"},
     "postgresAdminPassword": {
       "reference": {
         "keyVault": {
-          "id": "/subscriptions/<SUBSCRIPTION_ID>/resourceGroups/<RG>/providers/Microsoft.KeyVault/vaults/<VAULT_NAME>"
+          "id": "/subscriptions/<SUBSCRIPTION_ID>/resourceGroups/<VAULT_RG>/providers/Microsoft.KeyVault/vaults/<ADMIN_VAULT>"
         },
-        "secretName": "postgres-admin-password"
+        "secretName": "postgres-bootstrap-admin"
       }
     },
-    "appServicePlanSku": {
-      "value": "S1"
+    "productionDatabaseSecretUri": {
+      "value": "https://<PRODUCTION_VAULT>.vault.azure.net/secrets/runtime-database-url/<VERSION>"
     },
-    "postgresSku": {
-      "value": "Standard_D2s_v3"
+    "stagingDatabaseSecretUri": {
+      "value": "https://<STAGING_VAULT>.vault.azure.net/secrets/runtime-database-url/<VERSION>"
     },
-    "postgresStorageGB": {
-      "value": 32
-    }
+    "enableDemoSlot": {"value": false},
+    "demoDatabaseSecretUri": {"value": ""},
+    "enableDemoAlerts": {"value": false},
+    "alertEmailAddress": {"value": ""},
+    "enableSreAgent": {"value": false},
+    "sreAgentLocation": {"value": "eastus2"},
+    "sreAgentModelName": {"value": ""},
+    "sreAgentModelProvider": {"value": ""},
+    "sreAgentConsentReference": {"value": ""},
+    "grantSreInvestigationRoles": {"value": false}
   }
 }

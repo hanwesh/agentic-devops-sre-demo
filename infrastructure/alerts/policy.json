@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "service_name": "task-api",
+  "environment": "demo",
+  "window_minutes": 5,
+  "minimum_samples": 20,
+  "percentile": 95,
+  "excluded_paths": ["/live", "/ready", "/health"],
+  "rules": {
+    "http-5xx": {
+      "metric_column": "ErrorRate",
+      "threshold": 5,
+      "severity": 1
+    },
+    "latency-p95": {
+      "metric_column": "P95DurationMs",
+      "threshold": 3000,
+      "severity": 2
+    }
+  }
+}

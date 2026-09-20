@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -46,11 +47,31 @@ class TaskListResponse(BaseModel):
     per_page: int
 
 
-class HealthResponse(BaseModel):
-    """Schema for health check responses."""
+class LivenessResponse(BaseModel):
+    """Process identity without a database dependency."""
 
-    status: str
+    status: Literal["alive"] = "alive"
     environment: str
-    database: str
     uptime_seconds: float
     version: str
+    commit_sha: str
+    demo_scenario_enabled: bool
+    demo_run_id: str
+
+
+class HealthResponse(BaseModel):
+    """Readiness, retaining the original /health fields."""
+
+    status: Literal["healthy", "degraded"]
+    environment: str
+    database: Literal["healthy", "unhealthy"]
+    uptime_seconds: float
+    version: str
+    commit_sha: str
+    schema_revision: str | None
+    expected_schema_revision: str
+    database_name: str | None = None
+    database_role: str | None = None
+    reason: str | None = None
+    demo_scenario_enabled: bool
+    demo_run_id: str

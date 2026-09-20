@@ -33,6 +33,8 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+src/build_info.json
+coverage.xml
 
 # OS
 .DS_Store

@@ -7,7 +7,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.config import settings
 from src.database import get_db
+from src.demo_scenario import resolve_demo_status
 from src.models import Task
 from src.schemas import TaskCreate, TaskListResponse, TaskResponse, TaskUpdate
 
@@ -26,12 +28,13 @@ async def list_tasks(
     db: AsyncSession = Depends(get_db),
 ) -> TaskListResponse:
     """List tasks with optional filtering and pagination."""
-    # Intentional bug path for demo: triggers NoneType error
     if filter_name == "broken":
-        logger.warning("Broken filter triggered — this is the demo bug path")
-        result = None
-        # This will raise AttributeError: 'NoneType' object has no attribute 'items'
-        return result.items  # type: ignore[union-attr,no-any-return,attr-defined]
+        if not settings.demo_scenario_enabled or settings.environment != "demo":
+            raise HTTPException(
+                status_code=403,
+                detail="Demo scenario is disabled; use an explicitly enabled demo slot",
+            )
+        status = resolve_demo_status({"status": status} if status is not None else {})
 
     query = select(Task)
     count_query = select(func.count(Task.id))

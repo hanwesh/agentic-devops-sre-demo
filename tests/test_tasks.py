@@ -107,7 +107,8 @@ async def test_delete_task(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_broken_filter_returns_500(client: AsyncClient) -> None:
-    """The intentional 'broken' filter should trigger a 500 error."""
+async def test_demo_filter_is_disabled_by_default(client: AsyncClient) -> None:
+    """Normal deployments must not expose an intentional server failure."""
     response = await client.get("/api/tasks?filter=broken")
-    assert response.status_code == 500
+    assert response.status_code == 403
+    assert response.json()["detail"].startswith("Demo scenario is disabled")

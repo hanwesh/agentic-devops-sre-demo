@@ -9,6 +9,7 @@ from src.middleware.error_handler import ErrorHandlerMiddleware
 from src.middleware.logging_middleware import LoggingMiddleware
 from src.routes.health import router as health_router
 from src.routes.tasks import router as tasks_router
+from src.version import APP_VERSION, get_build_info
 
 # Configure logging
 logging.basicConfig(
@@ -19,18 +20,21 @@ logger = logging.getLogger(__name__)
 
 # Optionally configure Azure Monitor / Application Insights
 if settings.applicationinsights_connection_string:
-    try:
-        from azure.monitor.opentelemetry import configure_azure_monitor
+    from azure.monitor.opentelemetry import configure_azure_monitor
+    from opentelemetry.sdk.resources import Resource
 
-        configure_azure_monitor(
-            connection_string=settings.applicationinsights_connection_string,
-        )
-        logger.info("Azure Monitor OpenTelemetry configured")
-    except ImportError:
-        logger.warning(
-            "azure-monitor-opentelemetry not installed; "
-            "Application Insights telemetry disabled"
-        )
+    configure_azure_monitor(
+        connection_string=settings.applicationinsights_connection_string,
+        resource=Resource.create(
+            {
+                "service.name": "task-api",
+                "service.version": get_build_info().commit_sha,
+                "deployment.environment.name": settings.environment,
+            }
+        ),
+        sampling_ratio=1.0,
+    )
+    logger.info("Azure Monitor OpenTelemetry configured")
 
 app = FastAPI(
     title=settings.app_name,
@@ -38,12 +42,12 @@ app = FastAPI(
         "A demo application for showcasing the Agentic DevOps & SRE loop: "
         "Azure SRE Agent → GitHub Issues → Copilot Coding Agent → CI/CD."
     ),
-    version="1.0.0",
+    version=APP_VERSION,
     docs_url="/docs",
     redoc_url="/redoc",
 )
 
-# Middleware (order matters — outermost first)
+# The last registered middleware is outermost, so context exists on errors too.
 app.add_middleware(ErrorHandlerMiddleware)
 app.add_middleware(LoggingMiddleware)
 
@@ -59,6 +63,8 @@ async def root() -> dict[str, str]:
         "message": f"Welcome to {settings.app_name}",
         "docs": "/docs",
         "health": "/health",
+        "readiness": "/ready",
+        "liveness": "/live",
     }
 
 

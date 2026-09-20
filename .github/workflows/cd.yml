@@ -1,135 +1,172 @@
-name: CD — Deploy to Azure App Service
+name: Approved Azure release
 
 on:
-  push:
-    branches: [main]
+  workflow_call:
+    inputs:
+      commit_sha:
+        type: string
+        required: true
 
 permissions:
-  id-token: write
   contents: read
 
+concurrency:
+  group: azure-release-${{ github.repository }}
+  cancel-in-progress: false
+
 env:
+  RELEASE_SHA: ${{ inputs.commit_sha }}
   AZURE_WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
   AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
 
 jobs:
-  build:
-    name: Build
+  preflight:
+    name: Verify release provenance and environment policy
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        with:
+          ref: ${{ inputs.commit_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - run: pip install -r requirements-dev.txt -c requirements.lock
+      - name: Read-only protection checks
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AZURE_RUNNER_LABELS: ${{ vars.AZURE_RUNNER_LABELS }}
+          EPHEMERAL_RUNNER_CONFIRMED: ${{ vars.EPHEMERAL_RUNNER_CONFIRMED }}
+          ADMIN_BYPASS_DISABLED_CONFIRMED: ${{ vars.ADMIN_BYPASS_DISABLED_CONFIRMED }}
+          SWAP_KEY_VAULT_READY_CONFIRMED: ${{ vars.SWAP_KEY_VAULT_READY_CONFIRMED }}
+        run: python -m scripts.release_policy --sha "$RELEASE_SHA"
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Create deployment package
-        run: |
-          mkdir -p deploy
-          cp -r src/ deploy/src/
-          cp -r alembic/ deploy/alembic/
-          cp alembic.ini deploy/
-          cp requirements.txt deploy/
-          cd deploy && zip -r ../app.zip .
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-package
-          path: app.zip
-
-  deploy-staging:
-    name: Deploy to Staging
-    needs: build
-    runs-on: ubuntu-latest
+  staging:
+    name: Migrate isolated staging and verify CRUD
+    needs: preflight
+    runs-on: ${{ fromJSON(vars.AZURE_RUNNER_LABELS) }}
+    timeout-minutes: 25
+    outputs:
+      database_name: ${{ steps.smoke.outputs.database_name }}
     environment:
       name: staging
-      url: https://${{ env.AZURE_WEBAPP_NAME }}-staging.azurewebsites.net
+      url: https://${{ vars.AZURE_WEBAPP_NAME }}-staging.azurewebsites.net
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
     steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
         with:
-          name: app-package
-
-      - name: Login to Azure
-        uses: azure/login@v2
+          ref: ${{ inputs.commit_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt -c requirements.lock
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-${{ inputs.commit_sha }}
+          path: dist
+      - run: python -m scripts.package verify --sha "$RELEASE_SHA"
+      - uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Deploy to staging slot
-        uses: azure/webapps-deploy@v3
+      - name: Noninteractive network-scoped migration
+        env:
+          MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
+          DATABASE_NAME: ${{ vars.DATABASE_NAME }}
+          MIGRATOR_USER: ${{ vars.MIGRATOR_USER }}
+          RUNTIME_USER: ${{ vars.RUNTIME_USER }}
+          DATABASE_SSL_REQUIRED: "true"
+          ENVIRONMENT: staging
+        run: |
+          python -m scripts.migrate --database "$DATABASE_NAME" \
+            --user "$MIGRATOR_USER" --runtime-user "$RUNTIME_USER"
+      - uses: azure/webapps-deploy@v3
         with:
-          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          app-name: ${{ vars.AZURE_WEBAPP_NAME }}
           slot-name: staging
-          package: app.zip
-
-      - name: Run Alembic migrations
+          package: dist/app.zip
+      - name: Verify schema, exact artifact identity and real isolated CRUD
+        id: smoke
+        env:
+          DATABASE_NAME: ${{ vars.DATABASE_NAME }}
         run: |
-          az webapp ssh --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --name ${{ env.AZURE_WEBAPP_NAME }} \
-            --slot staging \
-            --command "cd /home/site/wwwroot && python -m alembic upgrade head"
+          python -m scripts.smoke \
+            --url "https://$AZURE_WEBAPP_NAME-staging.azurewebsites.net" \
+            --environment staging --sha "$RELEASE_SHA" --database "$DATABASE_NAME" --crud \
+            --output artifacts/staging-smoke.json
+          printf 'database_name=%s\n' "$DATABASE_NAME" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: staging-evidence-${{ inputs.commit_sha }}-${{ github.run_attempt }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 90
 
-      - name: Smoke test
-        run: |
-          STAGING_URL="https://${{ env.AZURE_WEBAPP_NAME }}-staging.azurewebsites.net"
-          for i in {1..10}; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$STAGING_URL/health" || true)
-            if [ "$STATUS" = "200" ]; then
-              echo "✅ Staging health check passed"
-              exit 0
-            fi
-            echo "⏳ Attempt $i: status=$STATUS, retrying in 10s..."
-            sleep 10
-          done
-          echo "❌ Staging health check failed"
-          exit 1
-
-  swap-to-production:
-    name: Swap to Production
-    needs: deploy-staging
-    runs-on: ubuntu-latest
+  production:
+    name: Human-approved production migration and promotion
+    needs: staging
+    runs-on: ${{ fromJSON(vars.AZURE_RUNNER_LABELS) }}
+    timeout-minutes: 30
     environment:
       name: production
-      url: https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net
+      url: https://${{ vars.AZURE_WEBAPP_NAME }}.azurewebsites.net
+    permissions:
+      contents: read
+      id-token: write
     steps:
-      - name: Login to Azure
-        uses: azure/login@v2
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt -c requirements.lock
+      - name: Recheck head and protection after approval wait
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AZURE_RUNNER_LABELS: ${{ vars.AZURE_RUNNER_LABELS }}
+          EPHEMERAL_RUNNER_CONFIRMED: ${{ vars.EPHEMERAL_RUNNER_CONFIRMED }}
+          ADMIN_BYPASS_DISABLED_CONFIRMED: ${{ vars.ADMIN_BYPASS_DISABLED_CONFIRMED }}
+          SWAP_KEY_VAULT_READY_CONFIRMED: ${{ vars.SWAP_KEY_VAULT_READY_CONFIRMED }}
+        run: python -m scripts.release_policy --sha "$RELEASE_SHA"
+      - uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Swap staging → production
+      - name: Migrate production, swap, verify, and roll back supported app failures
+        env:
+          MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
+          DATABASE_NAME: ${{ vars.DATABASE_NAME }}
+          STAGING_DATABASE_NAME: ${{ needs.staging.outputs.database_name }}
+          MIGRATOR_USER: ${{ vars.MIGRATOR_USER }}
+          RUNTIME_USER: ${{ vars.RUNTIME_USER }}
+          DATABASE_SSL_REQUIRED: "true"
+          ENVIRONMENT: production
+          ALLOW_INITIAL_DEPLOYMENT: ${{ vars.ALLOW_INITIAL_DEPLOYMENT }}
         run: |
-          az webapp deployment slot swap \
-            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --name ${{ env.AZURE_WEBAPP_NAME }} \
-            --slot staging \
-            --target-slot production
-
-      - name: Production health check
-        run: |
-          PROD_URL="https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net"
-          for i in {1..10}; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$PROD_URL/health" || true)
-            if [ "$STATUS" = "200" ]; then
-              echo "✅ Production health check passed"
-              exit 0
-            fi
-            echo "⏳ Attempt $i: status=$STATUS, retrying in 10s..."
-            sleep 10
-          done
-          echo "❌ Production health check failed — initiating rollback"
-          az webapp deployment slot swap \
-            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --name ${{ env.AZURE_WEBAPP_NAME }} \
-            --slot staging \
-            --target-slot production
-          exit 1
+          flags=()
+          if [ "$ALLOW_INITIAL_DEPLOYMENT" = "true" ]; then
+            flags+=(--allow-initial-deployment)
+          fi
+          python -m scripts.promote \
+            --app "$AZURE_WEBAPP_NAME" --resource-group "$AZURE_RESOURCE_GROUP" \
+            --sha "$RELEASE_SHA" --database "$DATABASE_NAME" --user "$MIGRATOR_USER" \
+            --staging-database "$STAGING_DATABASE_NAME" \
+            --runtime-user "$RUNTIME_USER" \
+            --output artifacts/production-release.json "${flags[@]}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: production-evidence-${{ inputs.commit_sha }}-${{ github.run_attempt }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 90
