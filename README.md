@@ -113,5 +113,6 @@ operator verification with credentials and a budget.
 - [Azure provisioning, databases, delivery, costs and teardown](docs/azure-setup.md)
 - [SRE response plan, Copilot handoff and evidence](docs/sre-agent-setup.md)
 - [Repeatable presenter workflow](demo/README.md)
+- [Six failure scenarios and step-by-step remediation](demo/failure-scenarios.md)
 
 MIT license.

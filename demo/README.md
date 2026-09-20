@@ -5,6 +5,12 @@ application or a production chaos test. Main, staging, and production stay healt
 Local tests validate the mechanics; they **do not prove the Azure alert → SRE
 Agent → issue → Copilot → reviewed fix → recovery loop**.
 
+For additional exercises, use the [failure and remediation playbook](failure-scenarios.md):
+App Service downtime, demo database access failure, bad-code 500, lock latency,
+schema damage and configuration drift. It includes approvals, step-by-step
+injection/diagnosis/recovery, evidence and reset. Only the code-regression scenario
+uses the automated Copilot handoff; the operational scenarios are manual runbooks.
+
 ## What actually breaks
 
 The legacy URL remains `GET /api/tasks?filter=broken`, but:

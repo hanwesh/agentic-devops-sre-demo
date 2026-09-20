@@ -5,6 +5,12 @@ API payload. Configure it in the SRE Agent portal following
 [setup](sre-agent-setup.md). It does not itself install a connector, approve tools,
 generate traffic, assign Copilot, or change production.
 
+This automated contract is specific to the isolated missing-status code regression.
+For App Service/database outages, latency, schema damage and configuration drift,
+use the [operational failure runbooks](../demo/failure-scenarios.md). Those scenarios
+use manual approval/evidence; do not force them into this endpoint-specific schema
+or launch the code-fix handoff for an infrastructure failure.
+
 ## Boundaries and operator plan
 
 | Plan field | Required value |

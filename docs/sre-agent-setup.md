@@ -11,6 +11,12 @@ Keep `SRE_HANDOFF_ENABLED` unset until every checkpoint passes. Missing access,
 consent, telemetry, or agent eligibility means **blocked/manual fallback**, not a
 successful automated loop.
 
+The [failure-scenario playbook](../demo/failure-scenarios.md) also covers app/database
+outages, locks, missing schema and configuration drift. Pause the code-regression
+publisher/handoff for those operational drills; keep investigation read-only and
+use their separately approved recovery steps. The existing request alerts cannot
+detect a stopped app that emits no telemetry.
+
 ## 1. Approve scope, access, and costs
 
 Before provisioning, record the demo App Service slot, demo database, demo
