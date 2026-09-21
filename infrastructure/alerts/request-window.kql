@@ -1,0 +1,29 @@
+let WindowEnd = now();
+let WindowStart = WindowEnd - __WINDOW_MINUTES__m;
+AppRequests
+| where TimeGenerated >= WindowStart and TimeGenerated < WindowEnd
+| where _ResourceId =~ '__INSIGHTS_RESOURCE_ID__'
+| extend ServiceName = coalesce(tostring(Properties["service.name"]), AppRoleName),
+         Environment = tostring(Properties["environment"]),
+         DeploymentCommit = tostring(Properties["deployment_sha"]),
+         DemoRunId = tostring(Properties["demo_run_id"]),
+         RequestPath = trim_end(@"/+", tostring(parse_url(Url).Path)),
+         StatusCode = toint(ResultCode),
+         SampleWeight = tolong(iff(isnull(ItemCount) or ItemCount < 1, 1, ItemCount))
+| where ServiceName == '__SERVICE_NAME__' and Environment == '__ENVIRONMENT__'
+| where DeploymentCommit matches regex @"^[0-9a-f]{40}$"
+| where DemoRunId matches regex @"^[a-z0-9][a-z0-9-]{0,47}$"
+| where isnotempty(RequestPath)
+| where RequestPath !in (dynamic(__EXCLUDED_PATHS__))
+| summarize TimeGenerated = max(TimeGenerated),
+            SampleCount = count(),
+            RequestCount = sum(SampleWeight),
+            ErrorCount = sumif(SampleWeight, StatusCode between (500 .. 599)),
+            P95DurationMs = percentilew(DurationMs, SampleWeight, __PERCENTILE__),
+            CorrelationIds = make_set(tostring(Properties["correlation_id"]), 10),
+            OperationIds = make_set(OperationId, 10)
+    by ServiceName, Environment, DeploymentCommit, DemoRunId
+| where SampleCount >= __MINIMUM_SAMPLES__
+| extend ErrorRate = 100.0 * todouble(ErrorCount) / todouble(RequestCount),
+         ResourceId = '__APP_RESOURCE_ID__',
+         WindowStart = WindowStart, WindowEnd = WindowEnd

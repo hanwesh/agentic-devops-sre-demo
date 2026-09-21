@@ -1,6 +1,6 @@
 [project]
 name = "agentic-devops-sre-demo"
-version = "1.0.0"
+version = "1.1.0"
 description = "Demo application for Agentic DevOps & SRE loop"
 requires-python = ">=3.12"
 readme = "README.md"
@@ -9,9 +9,20 @@ license = {text = "MIT"}
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "postgres: requires an explicitly configured ephemeral PostgreSQL server",
+    "demo_regression: positive coverage retained on intentional regression branches",
+]
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]
+
+[tool.coverage.run]
+omit = [".demo-branch-test-*/**", "*/.demo-branch-test-*/**"]
+
+[tool.coverage.report]
+omit = [".demo-branch-test-*/**", "*/.demo-branch-test-*/**"]
 
 [tool.mypy]
 python_version = "3.12"

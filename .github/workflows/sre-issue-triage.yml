@@ -2,80 +2,49 @@ name: SRE Issue Triage
 
 on:
   issues:
-    types: [opened, labeled]
+    types: [opened, labeled, reopened]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Existing validated demo incident to reconcile
+        required: true
+        type: number
 
-permissions:
-  issues: write
-  contents: read
+permissions: {}
+
+concurrency:
+  group: sre-handoff-${{ github.repository }}-${{ inputs.issue_number || github.event.issue.number }}
+  cancel-in-progress: false
 
 jobs:
-  triage:
-    name: Triage SRE Incident
-    if: contains(github.event.issue.labels.*.name, 'sre-incident')
+  handoff:
+    name: Validate and assign the demo incident
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.issue.labels.*.name, 'sre-incident')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      issues: write
+      # Atomic, immutable launch-intent tags prevent duplicate paid agent work.
+      contents: write
     steps:
-      - name: Parse issue severity
-        id: severity
-        uses: actions/github-script@v7
+      - uses: actions/checkout@v4
         with:
-          script: |
-            const body = context.payload.issue.body || '';
-            const title = context.payload.issue.title || '';
-            const combined = (title + ' ' + body).toLowerCase();
-
-            let priority = 'medium';
-            if (combined.includes('critical') || combined.includes('outage') || combined.includes('p0')) {
-              priority = 'critical';
-            } else if (combined.includes('high') || combined.includes('p1') || combined.includes('error rate')) {
-              priority = 'high';
-            } else if (combined.includes('low') || combined.includes('p3') || combined.includes('minor')) {
-              priority = 'low';
-            }
-
-            core.setOutput('priority', priority);
-            return priority;
-
-      - name: Add priority label
-        uses: actions/github-script@v7
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
         with:
-          script: |
-            const priority = '${{ steps.severity.outputs.priority }}';
-            await github.rest.issues.addLabels({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              labels: [`priority:${priority}`, 'copilot-assigned']
-            });
-
-      - name: Post triage comment
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const priority = '${{ steps.severity.outputs.priority }}';
-            const emoji = {
-              critical: '🔴',
-              high: '🟠',
-              medium: '🟡',
-              low: '🟢'
-            };
-
-            const body = `## ${emoji[priority] || '🟡'} SRE Issue Triaged
-
-            **Priority:** \`${priority}\`
-            **Auto-assigned to:** Copilot Coding Agent (via \`copilot-assigned\` label)
-
-            ### Next Steps
-            1. Copilot Coding Agent will analyze the stack trace and error details
-            2. A fix PR will be created automatically
-            3. A human reviewer will approve and merge the fix
-            4. CI/CD will deploy the fix to production
-
-            ---
-            _Triaged automatically by the SRE Issue Triage workflow_`;
-
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: body
-            });
+          python-version: "3.12"
+          cache: pip
+      - name: Install repository tooling
+        run: python -m pip install -r requirements-dev.txt -c requirements.lock
+      - name: Re-fetch, validate, and reconcile actual Copilot assignment
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          COPILOT_USER_TOKEN: ${{ secrets.COPILOT_USER_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
+          SRE_HANDOFF_ENABLED: ${{ vars.SRE_HANDOFF_ENABLED }}
+          COPILOT_POLICY_APPROVED: ${{ vars.COPILOT_POLICY_APPROVED }}
+          SRE_ALLOWED_ISSUE_AUTHOR: ${{ vars.SRE_ALLOWED_ISSUE_AUTHOR }}
+          SRE_DEMO_APP_INSIGHTS_RESOURCE_ID: ${{ vars.SRE_DEMO_APP_INSIGHTS_RESOURCE_ID }}
+        run: python -m scripts.sre_handoff --issue "$ISSUE_NUMBER"

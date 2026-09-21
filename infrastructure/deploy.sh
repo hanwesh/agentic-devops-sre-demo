@@ -1,36 +1,57 @@
 #!/usr/bin/env bash
-# Deploy Azure infrastructure using Bicep
-# Usage: ./deploy.sh <resource-group> <location> [postgres-password]
-
+# Offline plan by default. No group creation/deletion; demo-reader RBAC is a separate opt-in.
 set -euo pipefail
+set +x
 
-RESOURCE_GROUP="${1:?Usage: ./deploy.sh <resource-group> <location> [postgres-password]}"
-LOCATION="${2:?Usage: ./deploy.sh <resource-group> <location> [postgres-password]}"
-POSTGRES_PASSWORD="${3:-}"
-
-if [ -z "$POSTGRES_PASSWORD" ]; then
-  echo "Enter PostgreSQL admin password:"
-  read -rs POSTGRES_PASSWORD
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+RG="" LOCATION="" SUBSCRIPTION="" PARAMETERS="" MODE="plan" CONFIRM=""
+usage() {
+  echo "Usage: $0 --resource-group rg-sre-demo-<unique> --location <region> --subscription <id> --parameters <file> [--what-if|--apply] [--confirm-resource-group <exact-name>]"
+}
+while (($#)); do
+  case "$1" in
+    --resource-group) RG="${2:?Missing resource group}"; shift 2 ;;
+    --location) LOCATION="${2:?Missing location}"; shift 2 ;;
+    --subscription) SUBSCRIPTION="${2:?Missing subscription}"; shift 2 ;;
+    --parameters) PARAMETERS="${2:?Missing parameters file}"; shift 2 ;;
+    --confirm-resource-group) CONFIRM="${2:?Missing confirmation}"; shift 2 ;;
+    --what-if|--apply)
+      [[ "$MODE" == "plan" ]] || { echo "Choose one live mode." >&2; exit 2; }
+      MODE="${1#--}"; shift ;;
+    --help|-h) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+done
+[[ -n "$RG" && -n "$LOCATION" && -n "$SUBSCRIPTION" && -n "$PARAMETERS" ]] || {
+  usage >&2; exit 2;
+}
+[[ "$SUBSCRIPTION" =~ ^[a-fA-F0-9]{8}-([a-fA-F0-9]{4}-){3}[a-fA-F0-9]{12}$ ]] || {
+  echo "Invalid subscription ID." >&2; exit 2;
+}
+[[ "$LOCATION" =~ ^[a-z0-9]+$ ]] || { echo "Invalid region." >&2; exit 2; }
+python3 "$ROOT/infrastructure/safety.py" resource-group "$RG"
+python3 "$ROOT/infrastructure/safety.py" parameters "$PARAMETERS"
+printf 'Plan: subscription=%s resource-group=%s region=%s mode=%s\n' "$SUBSCRIPTION" "$RG" "$LOCATION" "$MODE"
+if [[ "$MODE" == "plan" ]]; then
+  echo "OFFLINE: no Azure calls. Review parameters, costs, bootstrap, and the dedicated group tags."
+  echo "A live what-if/apply requires the exact --confirm-resource-group value."
+  exit 0
 fi
+[[ "$CONFIRM" == "$RG" ]] || { echo "Exact resource-group confirmation required." >&2; exit 2; }
+export AZURE_EXTENSION_USE_DYNAMIC_INSTALL=no
+az group show --subscription "$SUBSCRIPTION" --name "$RG" --output json --only-show-errors |
+  python3 "$ROOT/infrastructure/safety.py" group "$RG"
+az resource list --subscription "$SUBSCRIPTION" --resource-group "$RG" --output json --only-show-errors |
+  python3 "$ROOT/infrastructure/safety.py" inventory "$RG"
 
-echo "🏗️  Creating resource group: $RESOURCE_GROUP in $LOCATION..."
-az group create --name "$RESOURCE_GROUP" --location "$LOCATION" --output none
-
-echo "🚀 Deploying Bicep template..."
-az deployment group create \
-  --resource-group "$RESOURCE_GROUP" \
-  --template-file infrastructure/main.bicep \
-  --parameters \
-    baseName=agentic-devops-demo \
-    postgresAdminPassword="$POSTGRES_PASSWORD" \
-  --output json
-
-echo ""
-echo "✅ Deployment complete!"
-echo ""
-echo "📋 Next steps:"
-echo "  1. Configure GitHub repository secrets (AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID)"
-echo "  2. Configure GitHub repository variables (AZURE_WEBAPP_NAME, AZURE_RESOURCE_GROUP)"
-echo "  3. Set up OIDC federated credential in Azure AD"
-echo "  4. Configure Azure SRE Agent to monitor the App Service"
-echo "  5. Push code to main branch to trigger CI/CD"
+if [[ "$MODE" == "what-if" ]]; then
+  az deployment group what-if --subscription "$SUBSCRIPTION" --resource-group "$RG" \
+    --template-file "$ROOT/infrastructure/main.bicep" --parameters "@$PARAMETERS" \
+    --parameters location="$LOCATION" --mode Incremental \
+    --result-format ResourceIdOnly --only-show-errors
+else
+  az deployment group create --subscription "$SUBSCRIPTION" --resource-group "$RG" \
+    --template-file "$ROOT/infrastructure/main.bicep" --parameters "@$PARAMETERS" \
+    --parameters location="$LOCATION" --mode Incremental --output none --only-show-errors
+  echo "Infrastructure deployed. Bootstrap, migrations, secret access, and live readiness remain operator gates."
+fi

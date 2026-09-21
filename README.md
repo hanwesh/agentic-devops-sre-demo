@@ -1,175 +1,118 @@
-# Agentic DevOps & SRE Demo
+# Agentic DevOps and SRE demo
 
-A fully automated DevOps pipeline demonstrating the **self-healing development loop**: Azure SRE Agent detects production incidents, creates rich GitHub Issues, GitHub Actions triages and assigns the Copilot Coding Agent, which implements fixes and opens PRs — all without human intervention until the review stage.
+A Python 3.12 FastAPI task API and a **human-governed incident-to-fix demonstration**:
+Azure Monitor alert -> Azure SRE Agent investigation -> actionable GitHub issue ->
+opt-in Copilot cloud-agent handoff -> reviewed fix -> gated deployment -> verified
+recovery evidence.
 
-## 🔄 The Agentic Loop
+The repository supplies application code, infrastructure, workflows, operator
+tools, and mocked integration tests. It does **not** claim that cloning or deploying
+the web app configures SRE connectors, grants consent, enables Copilot, or protects
+GitHub environments. Those are explicit prerequisites. No agent merges its own fix
+or makes unattended production changes.
 
-```
-Developer pushes code → GitHub Actions CI/CD deploys to Azure App Service →
-Azure SRE Agent monitors (App Insights + PostgreSQL) →
-SRE Agent detects incident → Creates rich GitHub Issue →
-GitHub Actions triages & assigns Copilot Coding Agent →
-Coding Agent creates fix PR → Human reviews & approves →
-CI/CD redeploys → SRE Agent confirms resolution → Loop continues
-```
+## What is delivered
 
-## 🏗️ Architecture
+| Area | Implementation |
+|---|---|
+| Application | Async SQLAlchemy task CRUD; structured exception/correlation telemetry; immutable artifact commit identity |
+| Database | Committed initial Alembic migration; PostgreSQL advisory locking; migration-built SQLite tests and fresh PostgreSQL integration tests |
+| Health | `/live` for the process; `/ready` and `/health` for database, actual task columns, migration revision, and deployment identity |
+| Delivery | CI gates the exact default-branch artifact; serialized staging CRUD, approved production migration/swap, read-only verification, conditional app rollback |
+| Isolation | Separate production, staging, and optional demo databases/settings/telemetry on one PostgreSQL server and App Service plan |
+| Incident loop | Supported, opt-in user-token Copilot API handoff; trusted structured incidents; durable evidence and explicit pending/failure states |
+| Demonstration | Healthy baseline; safeguarded disposable regression branch and demo slot; bounded traffic; positive regression test retained for the fix |
+| Operations | Opt-in SRE Agent IaC, operator runbook, configuration/live-read-only preflight, cost and teardown guidance |
 
-```
-┌─────────────┐    push/merge     ┌──────────────────┐    deploy    ┌──────────────────────────────┐
-│  Developer   │ ───────────────► │  GitHub Actions   │ ──────────► │  Azure App Service (Linux)   │
-│  (Human)     │                  │  CI/CD Pipeline   │             │  Python 3.12 + FastAPI       │
-└──────┬───────┘                  └──────────────────┘             │  + Azure PostgreSQL (Std)    │
-       │                                   ▲                       │  + Application Insights      │
-       │ review PR                         │ merge                 └────────────┬─────────────────┘
-       │                                   │                                    │
-┌──────▼───────┐    creates PR    ┌────────┴─────────┐  assigns   ┌────────────▼─────────────────┐
-│  Pull Request │ ◄────────────── │ Copilot Coding   │ ◄───────── │  Azure SRE Agent             │
-│  (for review) │                 │ Agent            │  via GH    │  → detects incidents         │
-└──────────────┘                  └──────────────────┘  Actions   │  → creates GitHub Issues     │
-                                                                   └──────────────────────────────┘
-```
-
-## 🛠️ Tech Stack
-
-| Component | Technology |
-|-----------|-----------|
-| Web Framework | FastAPI (Python 3.12) |
-| Database | Azure Database for PostgreSQL (Flexible Server) |
-| ORM | SQLAlchemy 2.0 (async) + Alembic |
-| Monitoring | Azure Application Insights + Log Analytics |
-| CI/CD | GitHub Actions |
-| Infrastructure | Azure Bicep |
-| Incident Detection | Azure SRE Agent |
-| Auto-Fix | GitHub Copilot Coding Agent |
-
-## 📂 Project Structure
-
-```
-├── src/                          # FastAPI application
-│   ├── main.py                   # App entry point
-│   ├── config.py                 # Pydantic settings
-│   ├── database.py               # Async SQLAlchemy engine
-│   ├── models.py                 # ORM models
-│   ├── schemas.py                # Pydantic schemas
-│   ├── routes/                   # API route handlers
-│   │   ├── tasks.py              # Task CRUD
-│   │   └── health.py             # Health check
-│   └── middleware/               # Middleware
-│       ├── error_handler.py      # Global exception handler
-│       └── logging_middleware.py  # Request logging
-├── tests/                        # Pytest test suite
-├── infrastructure/               # Azure Bicep IaC
-│   ├── main.bicep                # All Azure resources
-│   ├── parameters.json           # Deployment parameters
-│   └── deploy.sh                 # Deployment helper script
-├── demo/                         # Demo scripts
-│   ├── generate_traffic.sh       # Trigger the demo bug
-│   └── README.md                 # Presenter's guide
-├── docs/                         # Documentation
-│   ├── architecture.md           # Architecture deep-dive
-│   ├── azure-setup.md            # Azure provisioning guide
-│   └── sre-agent-setup.md        # SRE Agent configuration
-├── .github/
-│   ├── workflows/
-│   │   ├── ci.yml                # CI: lint, test, security
-│   │   ├── cd.yml                # CD: deploy to Azure
-│   │   └── sre-issue-triage.yml  # Auto-triage SRE issues
-│   ├── copilot-instructions.md   # Coding agent guidelines
-│   └── ISSUE_TEMPLATE/
-│       └── sre-incident.yml      # SRE incident template
-├── alembic/                      # Database migrations
-├── Dockerfile                    # Container image
-├── requirements.txt              # Production dependencies
-├── requirements-dev.txt          # Dev/test dependencies
-└── pyproject.toml                # Project config
-```
-
-## 🚀 Quick Start
-
-### Prerequisites
-- Python 3.12+
-- PostgreSQL (local or Azure)
-- Azure CLI (for deployment)
-
-### Local Development
+## Local development
 
 ```bash
-# Clone the repo
-git clone https://github.com/hanwesh/agentic-devops-sre-demo.git
-cd agentic-devops-sre-demo
-
-# Create virtual environment
-python -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
+pip install -r requirements-dev.txt -c requirements.lock
 
-# Install dependencies
-pip install -r requirements-dev.txt
-
-# Set environment variables (or create .env file)
-export DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/tasksdb"
-
-# Run database migrations
+# Supply DATABASE_URL for your disposable local PostgreSQL database.
+# Use the postgresql+asyncpg scheme; do not commit credentials.
 alembic upgrade head
-
-# Start the application
 uvicorn src.main:app --reload
-
-# Run tests
-pytest -v --cov=src
-
-# Run linter
-ruff check src/ tests/
 ```
 
-### Deploy to Azure
-
-See the [Azure Setup Guide](docs/azure-setup.md) for detailed instructions.
+The application never calls `create_all()` at startup. A fresh database must be
+migrated before readiness succeeds. Azure additionally requires TLS and separately
+scoped runtime/migrator users; see [Azure setup](docs/azure-setup.md).
 
 ```bash
-# Quick deploy
-chmod +x infrastructure/deploy.sh
-./infrastructure/deploy.sh my-resource-group eastus
+ruff check .
+ruff format --check .
+mypy src/ scripts/ --ignore-missing-imports
+pytest -m "not postgres" -v
+pip-audit --disable-pip --no-deps -r requirements.lock
 ```
 
-## 🎯 API Endpoints
+`requirements.lock` pins the complete runtime dependency graph. CI installs the
+same constraints, and deployment packaging uses the lock as its requirements file.
+The audit disables dependency resolution only because every runtime dependency is
+already pinned in that file; it does not ignore findings.
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/` | Welcome message + links |
-| `GET` | `/health` | Health check (DB, uptime, version) |
-| `GET` | `/docs` | Swagger UI |
-| `GET` | `/api/tasks` | List tasks (paginated) |
-| `POST` | `/api/tasks` | Create a task |
-| `GET` | `/api/tasks/{id}` | Get a task |
-| `PUT` | `/api/tasks/{id}` | Update a task |
-| `DELETE` | `/api/tasks/{id}` | Delete a task |
+PostgreSQL integration tests create and remove only uniquely named `sre_test_*`
+databases on an **explicitly authorized disposable server**:
 
-### Demo Bug Trigger
+```bash
+# Set TEST_POSTGRES_URL to the ephemeral server's maintenance database.
+export ALLOW_EPHEMERAL_POSTGRES=true
+pytest -m postgres -v
 ```
-GET /api/tasks?filter=broken → 500 Internal Server Error
-```
-This intentional bug path is used to demonstrate the SRE incident detection loop.
 
-## 🎬 Running the Demo
+Without `TEST_POSTGRES_URL`, local PostgreSQL tests are reported as skipped, not
+passed. CI and the Copilot setup workflow supply an ephemeral PostgreSQL 16 service.
+Do not point these tests at a shared or production server.
 
-See the full [Presenter's Guide](demo/README.md) for a scripted walkthrough.
+## HTTP contracts
 
-Quick version:
-1. Deploy the app and verify it's healthy
-2. Run `./demo/generate_traffic.sh https://<app>.azurewebsites.net`
-3. Watch Azure SRE Agent create a GitHub Issue
-4. Watch the triage workflow assign Copilot Coding Agent
-5. Watch Copilot create a fix PR
-6. Review, approve, merge — app self-heals
+| Method | Path | Behavior |
+|---|---|---|
+| GET | `/live` | Process liveness and public build/environment identity; no database access |
+| GET | `/ready`, `/health` | `200` only when ready; `503` for unavailable/incompatible schema or missing deployed build identity |
+| GET | `/docs` | OpenAPI UI |
+| GET / POST | `/api/tasks` | Paginated list / create |
+| GET / PUT / DELETE | `/api/tasks/{id}` | Read / update / delete |
 
-## 📖 Documentation
+`/health` retains its original fields and adds commit/schema/scenario metadata.
+**Unhealthy responses intentionally change from HTTP 200 to 503.** Consumers must
+validate the body as well as the status. Local un-packaged builds identify their
+commit as `unknown`; this is not accepted for deployed-environment readiness.
 
-- [Architecture](docs/architecture.md) — System design and data flows
-- [Azure Setup](docs/azure-setup.md) — Infrastructure provisioning guide
-- [SRE Agent Setup](docs/sre-agent-setup.md) — SRE Agent configuration
-- [Demo Guide](demo/README.md) — Step-by-step presenter's guide
+The old always-broken `filter=broken` path is no longer a normal production fault.
+It is rejected unless the explicitly enabled `demo` scenario is configured with
+a run ID. In the healthy baseline it succeeds. The operator introduces a real,
+tested missing-fallback regression only on a disposable `demo/<run-id>` branch.
 
-## License
+## Deploying and presenting
 
-MIT
+1. Follow [Azure setup](docs/azure-setup.md): opt-in provisioning, private-network
+   runner, database roles/secrets, environment-scoped OIDC, and environment reviewers.
+2. Configure the separate SRE Agent, telemetry/GitHub connectors, consent and
+   response plan using [SRE setup](docs/sre-agent-setup.md). Keep automated handoff
+   disabled until its policy, user-token authentication and issue-origin checks pass.
+3. Follow the [presenter guide](demo/README.md) for an isolated regression, bounded
+   traffic, a real issue/task/PR, human review, repeatable recovery, and reset.
+
+`ENABLE_AZURE_DEPLOY=true` opts default-branch CI into production delivery; it is
+disabled when absent. Deployment cannot bypass the CI jobs, exact-commit checks,
+schema/CRUD checks, or the configured production approval. The demo workflow never
+swaps into production. No traffic tool should target production.
+
+Local tests, mocked APIs, and Bicep compilation are **not** an end-to-end Azure
+demonstration. Region/model availability, permissions, connectors, telemetry
+ingestion, preview Copilot APIs and actual deployment/recovery require the documented
+operator verification with credentials and a budget.
+
+## Documentation
+
+- [Architecture and trust boundaries](docs/architecture.md)
+- [Azure provisioning, databases, delivery, costs and teardown](docs/azure-setup.md)
+- [SRE response plan, Copilot handoff and evidence](docs/sre-agent-setup.md)
+- [Repeatable presenter workflow](demo/README.md)
+- [Six failure scenarios and step-by-step remediation](demo/failure-scenarios.md)
+
+MIT license.

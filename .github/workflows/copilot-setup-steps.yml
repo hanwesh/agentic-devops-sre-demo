@@ -1,0 +1,48 @@
+name: Copilot Setup Steps
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+      - requirements*.txt
+      - requirements.lock
+  pull_request:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+      - requirements*.txt
+      - requirements.lock
+
+jobs:
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ephemeral-ci-only
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install the same constrained environment used in CI
+        run: pip install -r requirements-dev.txt -c requirements.lock
+      - name: Verify disposable database access and initial migrations
+        env:
+          TEST_POSTGRES_URL: postgresql+asyncpg://postgres:ephemeral-ci-only@localhost:5432/postgres
+          ALLOW_EPHEMERAL_POSTGRES: "true"
+        run: pytest -m postgres -v

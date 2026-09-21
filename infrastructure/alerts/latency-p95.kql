@@ -1,0 +1,5 @@
+| extend IncidentFingerprint = hash_sha256(strcat(Environment, "|", DemoRunId,
+    "|/api/tasks?filter=broken|latency"))
+| project TimeGenerated, ResourceId, ServiceName, Environment, DeploymentCommit, DemoRunId,
+    IncidentFingerprint, SampleCount, RequestCount, ErrorCount, ErrorRate, P95DurationMs,
+    WindowStart, WindowEnd, CorrelationIds, OperationIds

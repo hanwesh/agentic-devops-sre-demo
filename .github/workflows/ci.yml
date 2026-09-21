@@ -1,78 +1,157 @@
-name: CI — Lint, Test & Security
+name: CI
 
 on:
   push:
-    branches: ["*"]
+    branches: ["**"]
   pull_request:
-    branches: [main]
+    branches: [main, "demo/**"]
 
 permissions:
   contents: read
 
 jobs:
   lint:
-    name: Lint & Type Check
+    name: Lint and types
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
+      - run: pip install -r requirements-dev.txt -c requirements.lock
+      - run: ruff check . && ruff format --check .
+      - run: mypy src/ scripts/ --ignore-missing-imports
 
-      - name: Install dependencies
-        run: pip install -r requirements-dev.txt
-
-      - name: Run ruff (linter)
-        run: ruff check src/ tests/
-
-      - name: Run ruff (formatter check)
-        run: ruff format --check src/ tests/
-
-      - name: Run mypy
-        run: mypy src/ --ignore-missing-imports
-
-  test:
-    name: Test
+  unit:
+    name: Unit and mocked integrations
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
-
-      - name: Install dependencies
-        run: pip install -r requirements-dev.txt
-
-      - name: Run tests with coverage
-        run: pytest --cov=src --cov-report=term-missing --cov-report=xml -v
-
-      - name: Upload coverage report
+      - run: pip install -r requirements-dev.txt -c requirements.lock
+      - run: pytest -m "not postgres" --cov=src --cov=scripts --cov-report=xml -v
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
-          name: coverage-report
+          name: coverage-${{ github.sha }}
           path: coverage.xml
+          retention-days: 14
+
+  postgres:
+    name: Fresh PostgreSQL migrations and CRUD
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ephemeral-ci-only
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt -c requirements.lock
+      - name: Migrate empty databases, serialize upgrades and run real CRUD
+        env:
+          TEST_POSTGRES_URL: postgresql+asyncpg://postgres:ephemeral-ci-only@localhost:5432/postgres
+          ALLOW_EPHEMERAL_POSTGRES: "true"
+        run: pytest -m postgres -v
 
   security:
-    name: Security Scan
+    name: Locked runtime dependency audit
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
+      - run: pip install -r requirements-dev.txt -c requirements.lock
+      - run: pip check
+      - run: pip-audit --disable-pip --no-deps -r requirements.lock --progress-spinner off
 
-      - name: Install dependencies
-        run: pip install -r requirements-dev.txt
+  configuration:
+    name: Bicep, workflows and shell syntax
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile infrastructure without deploying
+        run: |
+          az bicep install --version v0.47.16
+          az bicep build --file infrastructure/main.bicep --outfile "$RUNNER_TEMP/main.json"
+      - name: Validate workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - name: Validate operator shell syntax
+        run: find infrastructure demo -name '*.sh' -print0 | xargs -0 -r -n1 bash -n
 
-      - name: Run pip-audit
-        run: pip-audit -r requirements.txt
+  package:
+    name: Package the gated default-branch commit
+    needs: [lint, unit, postgres, security, configuration]
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt -c requirements.lock
+      - name: Create immutable deployment artifact
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+        run: python -m scripts.package build --sha "$RELEASE_SHA"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.sha }}
+          path: dist/app.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  deploy:
+    name: Approved Azure delivery
+    needs: [lint, unit, postgres, security, configuration, package]
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      vars.ENABLE_AZURE_DEPLOY == 'true'
+    permissions:
+      contents: read
+      actions: read
+      deployments: read
+      id-token: write
+    uses: ./.github/workflows/cd.yml
+    with:
+      commit_sha: ${{ github.sha }}
+    secrets: inherit
